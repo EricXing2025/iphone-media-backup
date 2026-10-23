@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+last_run_manifest.json
+.iPhone迁移暂存/

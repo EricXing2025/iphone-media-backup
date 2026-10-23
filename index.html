@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>iPhone 备份到移动硬盘</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; background: #f5f5f7; color: #1d1d1f; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 20px; }
+  .cards { display: flex; gap: 12px; margin-bottom: 16px; }
+  .card { flex: 1; background: #fff; border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card .t { font-size: 12px; color: #86868b; margin-bottom: 6px; }
+  .card .v { font-size: 15px; font-weight: 600; }
+  .ok { color: #28a745; } .bad { color: #dc3545; }
+  .panel { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 14px; }
+  label.small { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  input[type=text] { width: 100%; padding: 8px 10px; border: 1px solid #d2d2d7; border-radius: 8px; font-size: 14px; }
+  .row { display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; }
+  button { border: 0; border-radius: 10px; padding: 10px 20px; font-size: 15px; cursor: pointer; }
+  .primary { background: #0071e3; color: #fff; }
+  .danger  { background: #dc3545; color: #fff; }
+  .ghost   { background: #e8e8ed; color: #1d1d1f; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .bar { height: 10px; background: #e8e8ed; border-radius: 6px; overflow: hidden; margin-top: 14px; }
+  .bar i { display: block; height: 100%; background: #0071e3; width: 0; transition: width .4s; }
+  .meta { font-size: 13px; color: #6e6e73; margin-top: 8px; display:flex; justify-content:space-between; }
+  #log { background:#1d1d1f; color:#d6ffd6; font-family: Menlo, monospace; font-size:12px; border-radius:10px; padding:12px; height:220px; overflow-y:auto; white-space:pre-wrap; }
+  .tip { font-size: 13px; color: #6e6e73; line-height: 1.6; }
+  .tip b { color: #d93025; }
+  .chk { display:flex; align-items:center; gap:6px; font-size:14px; }
+  #phase { font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📱 iPhone 备份到移动硬盘</h1>
+
+  <div class="cards">
+    <div class="card"><div class="t">iPhone</div><div class="v" id="dev">检测中…</div></div>
+    <div class="card"><div class="t">移动硬盘</div><div class="v" id="disk">检测中…</div></div>
+    <div class="card"><div class="t">状态</div><div class="v" id="phase">空闲</div></div>
+  </div>
+
+  <div class="panel">
+    <label class="small">备份目标目录(移动硬盘)</label>
+    <input type="text" id="dest" placeholder="/Volumes/…">
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="split" checked> 视频分成片/素材</label>
+      <button class="primary" id="start">开始迁移</button>
+      <button class="ghost" id="cancel" disabled>取消</button>
+    </div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="meta"><span id="prog">—</span><span id="cur"></span></div>
+  </div>
+
+  <div class="panel" id="delpanel" style="display:none">
+    <div class="tip">✅ 迁移完成。确认硬盘上的文件都完好后再清理手机:</div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="confirm"> 我已确认硬盘里的照片视频完好</label>
+      <button class="danger" id="delete" disabled>清理 iPhone</button>
+    </div>
+  </div>
+
+  <div class="panel"><div id="log"></div></div>
+
+  <div class="panel tip">
+    使用提示:<b>传输期间请保持 iPhone 解锁并亮屏</b>(设置→显示与亮度→自动锁定→永不)。
+    本工具只读取相机相册(DCIM),迁移过程自动校验;清理手机只会删除已确认备份完好的文件,iCloud 云端照片不受影响。
+  </div>
+</div>
+
+<script>
+let timer = null;
+const $ = id => document.getElementById(id);
+const PHASE = {idle:'空闲',starting:'启动中',scanning:'扫描手机',pulling:'拷贝中',
+  classifying:'分类中',done:'已完成',deleting:'清理手机中',deleted:'已清理',
+  error:'出错',cancelled:'已取消'};
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    $('dev').innerHTML = s.iphone
+      ? `<span class="ok">●</span> ${s.iphone.name} · iOS ${s.iphone.ios} · 剩余 ${s.iphone.free_gb}G`
+      : `<span class="bad">●</span> 未连接 (请用数据线连接并解锁)`;
+    $('disk').innerHTML = s.disk
+      ? `<span class="ok">●</span> ${s.disk.path} · 剩余 ${s.disk.free_gb}G`
+      : `<span class="bad">●</span> 未检测到可写硬盘`;
+    if (!document.activeElement || document.activeElement.id !== 'dest')
+      if (!$('dest').dataset.touched) $('dest').value = s.dest || '';
+    const j = await (await fetch('/api/job')).json();
+    $('phase').textContent = PHASE[j.phase] || j.phase;
+    const pct = j.total_bytes ? Math.min(100, j.bytes_done / j.total_bytes * 100) : (j.total_files ? j.done_files/j.total_files*100 : 0);
+    $('bar').style.width = pct + '%';
+    $('prog').textContent = j.total_files
+      ? `${j.done_files}/${j.total_files} 个文件 · ${(j.bytes_done/1e9).toFixed(1)}/${(j.total_bytes/1e9).toFixed(1)} GB`
+      : (j.summary || '—');
+    $('cur').textContent = j.current ? j.current.split('/').pop() : '';
+    $('start').disabled = j.running || !s.iphone || !s.disk;
+    $('cancel').disabled = !j.running;
+    $('delpanel').style.display = (j.phase === 'done' || j.phase === 'deleted' || j.phase === 'deleting') ? 'block' : 'none';
+    $('delete').disabled = j.running || !$('confirm').checked || j.phase === 'deleted';
+    if (j.phase === 'deleted') $('phase').innerHTML = '已清理 ✅';
+    const lg = await (await fetch('/api/log')).json();
+    $('log').textContent = lg.log.join('\n');
+    $('log').scrollTop = $('log').scrollHeight;
+  } catch(e) {}
+}
+$('confirm').onchange = () => refresh();
+$('dest').oninput = e => e.target.dataset.touched = 1;
+$('start').onclick = async () => {
+  const r = await fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({dest: $('dest').value, split_cuts: $('split').checked})});
+  const j = await r.json();
+  if (!j.ok) alert(j.msg || '启动失败');
+  refresh();
+};
+$('cancel').onclick = async () => { await fetch('/api/cancel', {method:'POST'}); refresh(); };
+$('delete').onclick = async () => {
+  if (!confirm('确定要从 iPhone 删除已迁移的照片视频吗?此操作不可撤销(硬盘上的文件保留)。')) return;
+  const r = await fetch('/api/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({confirm: $('confirm').checked})});
+  const j = await r.json();
+  if (!j.ok) alert(j.msg || '操作失败');
+  refresh();
+};
+refresh(); timer = setInterval(refresh, 1500);
+</script>
+</body>
+</html>
